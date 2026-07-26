@@ -74,10 +74,8 @@ Handoffs preserve verified branch state. Context packets select only documents r
 
 [Quick start](docs/QUICKSTART.md) | [Existing projects](docs/EXISTING_PROJECTS.md) | [Architecture](docs/ARCHITECTURE.md) | [Context model](docs/CONTEXT_MODEL.md) | [CLI](docs/CLI.md) | [Safety](docs/SAFETY.md) | [Alternatives](docs/ALTERNATIVES.md)
 
-## Deliberately small
+## Status
+Threadmark is in early development. Use `threadmark init --dry-run` to preview changes before setup.
 
-Threadmark does not capture transcripts, run a background service, use a vector database, or silently learn from every message. V1 favors context that is compact, inspectable, and hard to corrupt.
-
-Early implementation. Review initialization changes before using Threadmark in an important repository.
-
-MIT licensed.
+## License
+Threadmark is released under the [MIT License](https://github.com/dhairyaaa15/ThreadMark?tab=MIT-1-ov-file).
