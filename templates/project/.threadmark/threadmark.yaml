@@ -1,0 +1,14 @@
+version: 1
+
+context:
+  budget_tokens: 1200
+  max_documents: 3
+  kernel_budget_tokens: 350
+  index_budget_tokens: 300
+
+handoffs:
+  expires_days: 14
+
+adapters:
+  codex: AGENTS.md
+  claude: CLAUDE.md

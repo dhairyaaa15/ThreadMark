@@ -1,0 +1,190 @@
+import path from "node:path";
+import { ADAPTERS, MANAGED_END, MANAGED_START } from "./constants.js";
+import { estimateTokens } from "./tokens.js";
+import { exists, fileSize, readText, relativePosix, walkFiles } from "./filesystem.js";
+import { markerStatus } from "./markers.js";
+
+const ROOT_INSTRUCTION_FILES = new Set([
+  "AGENTS.md",
+  "AGENT.md",
+  "CLAUDE.md",
+  "GEMINI.md",
+  ".cursorrules"
+]);
+
+function classify(relativePath) {
+  const lower = relativePath.toLowerCase();
+  if (lower.endsWith("agents.md") || lower.endsWith("agent.md")) {
+    return { agent: "Codex and compatible agents", loading: "hierarchical instructions" };
+  }
+  if (lower.endsWith("claude.md")) {
+    return { agent: "Claude Code", loading: "memory hierarchy" };
+  }
+  if (lower.startsWith(".claude/rules/")) {
+    return { agent: "Claude Code", loading: "conditional or project rules" };
+  }
+  if (lower.startsWith(".claude/")) {
+    return { agent: "Claude Code", loading: "provider configuration" };
+  }
+  if (lower.startsWith(".codex/")) {
+    return { agent: "Codex", loading: "provider configuration" };
+  }
+  if (lower.includes("copilot-instructions")) {
+    return { agent: "GitHub Copilot", loading: "project instructions" };
+  }
+  if (lower.startsWith(".cursor/") || lower === ".cursorrules") {
+    return { agent: "Cursor", loading: "project rules" };
+  }
+  if (lower.startsWith(".windsurf/")) {
+    return { agent: "Windsurf", loading: "project rules" };
+  }
+  if (lower.endsWith("gemini.md")) {
+    return { agent: "Gemini CLI", loading: "project instructions" };
+  }
+  return { agent: "Unknown", loading: "manual or tool-specific" };
+}
+
+function isInstructionCandidate(fullPath, name, root) {
+  const relative = relativePosix(root, fullPath);
+  const lower = relative.toLowerCase();
+  const topLevel = !relative.includes("/");
+
+  if (topLevel && ROOT_INSTRUCTION_FILES.has(name)) {
+    return true;
+  }
+  if ((name === "AGENTS.md" || name === "CLAUDE.md") && !lower.startsWith(".threadmark/")) {
+    return true;
+  }
+  if (lower === ".github/copilot-instructions.md") {
+    return true;
+  }
+  if (lower.startsWith(".claude/")) {
+    return /\.(md|json)$/i.test(name);
+  }
+  if (lower.startsWith(".codex/")) {
+    return /\.(md|json|toml)$/i.test(name);
+  }
+  if (lower.startsWith(".cursor/rules/") || lower.startsWith(".windsurf/rules/")) {
+    return /\.(md|mdc|json)$/i.test(name);
+  }
+  return false;
+}
+
+export async function scanProject(root) {
+  const files = await walkFiles(root, {
+    include: (fullPath, name) => isInstructionCandidate(fullPath, name, root),
+    maxFiles: 10000
+  });
+
+  const contexts = [];
+  for (const file of files.sort()) {
+    const relativePath = relativePosix(root, file);
+    const size = await fileSize(file);
+    const classification = classify(relativePath);
+    let managed = "not-applicable";
+
+    if (relativePath === "AGENTS.md" || relativePath === "CLAUDE.md") {
+      managed = markerStatus(await readText(file));
+    }
+
+    contexts.push({
+      path: relativePath,
+      bytes: size,
+      estimatedTokens: estimateTokens(size),
+      managed,
+      ...classification
+    });
+  }
+
+  const adapters = [];
+  for (const adapter of ADAPTERS) {
+    const target = path.join(root, adapter.file);
+    if (!(await exists(target))) {
+      adapters.push({ file: adapter.file, agent: adapter.agent, status: "missing" });
+      continue;
+    }
+    adapters.push({
+      file: adapter.file,
+      agent: adapter.agent,
+      status: markerStatus(await readText(target))
+    });
+  }
+
+  return {
+    project: root,
+    threadmark: {
+      initialized: await exists(path.join(root, ".threadmark", "threadmark.yaml")),
+      directoryPresent: await exists(path.join(root, ".threadmark"))
+    },
+    adapters,
+    contexts,
+    totals: {
+      files: contexts.length,
+      estimatedTokens: contexts.reduce((sum, item) => sum + item.estimatedTokens, 0)
+    },
+    readOnly: true
+  };
+}
+
+export function renderScan(result) {
+  const lines = [
+    "Threadmark scan",
+    `Project: ${result.project}`,
+    `Initialized: ${result.threadmark.initialized ? "yes" : "no"}`,
+    "",
+    "Native adapters"
+  ];
+
+  for (const adapter of result.adapters) {
+    lines.push(`- ${adapter.file}: ${adapter.status} (${adapter.agent})`);
+  }
+
+  lines.push("", "Existing context");
+  if (result.contexts.length === 0) {
+    lines.push("- No recognized project context files found.");
+  } else {
+    for (const item of result.contexts) {
+      lines.push(`- ${item.path}: ${item.agent}; ${item.loading}; about ${item.estimatedTokens} tokens`);
+    }
+  }
+
+  lines.push(
+    "",
+    `Recognized files: ${result.totals.files}`,
+    `Estimated total if all were loaded: ${result.totals.estimatedTokens} tokens`,
+    "No files were changed."
+  );
+
+  return `${lines.join("\n")}\n`;
+}
+
+export function renderCatalog(result) {
+  const lines = [
+    "# Existing agent context catalog",
+    "",
+    "Generated by `threadmark init`. This file is local and read-only evidence; it is not copied into shared context.",
+    "",
+    "| Path | Agent | Loading | Estimated tokens |",
+    "| --- | --- | --- | ---: |"
+  ];
+
+  if (result.contexts.length === 0) {
+    lines.push("| None found | - | - | 0 |");
+  } else {
+    for (const item of result.contexts) {
+      lines.push(`| \`${item.path}\` | ${item.agent} | ${item.loading} | ${item.estimatedTokens} |`);
+    }
+  }
+
+  lines.push(
+    "",
+    "Threadmark does not copy, merge, or rewrite these files. Review overlaps manually before promoting provider-specific guidance into shared context.",
+    ""
+  );
+
+  return lines.join("\n");
+}
+
+export function containsThreadmarkMarkers(contents) {
+  return contents.includes(MANAGED_START) || contents.includes(MANAGED_END);
+}
